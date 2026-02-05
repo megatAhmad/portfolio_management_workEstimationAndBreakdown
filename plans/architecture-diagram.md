@@ -17,7 +17,7 @@ flowchart TB
     end
     
     subgraph External["External APIs"]
-        OpenAI[OpenAI API]
+        AIProvider[Azure OpenAI or OpenRouter]
     end
     
     subgraph Data["Data Layer"]
@@ -30,7 +30,7 @@ flowchart TB
     SV --> State
     State --> DB
     TBV --> AI
-    AI --> OpenAI
+    AI --> AIProvider
     DB --> IDB
 ```
 

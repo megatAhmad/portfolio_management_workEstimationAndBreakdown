@@ -85,7 +85,7 @@ interface Sprint {
 - **Frontend**: React + TypeScript + Tailwind CSS
 - **State Management**: Zustand or Redux Toolkit
 - **Database**: IndexedDB (local-first) or SQLite
-- **AI Integration**: OpenAI API or similar
+- **AI Integration**: Azure OpenAI or OpenRouter
 - **Visualization**: React Flow (for task tree) + Custom components
 
 ### 4.2 Component Structure

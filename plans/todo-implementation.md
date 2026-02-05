@@ -20,10 +20,11 @@
 - [ ] Implement optimistic updates
 
 ## Phase 4: AI Service Integration
-- [ ] Create AI service module
+- [ ] Create AI service module supporting Azure OpenAI and OpenRouter
 - [ ] Implement task breakdown prompt engineering
 - [ ] Add mock AI responses for development
 - [ ] Create AI result parser/normalizer
+- [ ] Add configuration for AI provider selection
 
 ## Phase 5: View 1 - Task Breakdown UI
 - [ ] Create TaskTree component with React Flow
