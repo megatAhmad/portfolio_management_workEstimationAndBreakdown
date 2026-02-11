@@ -1,6 +1,7 @@
-import { useEffect, useRef, useMemo } from "react";
+import { useEffect, useRef, useMemo, useState } from "react";
 import Gantt from "frappe-gantt";
 import { useProjectStore } from "../store/useProjectStore";
+import { exportGanttAsPng, exportGanttAsHtml } from "../utils/exportUtils";
 
 function addBusinessDays(start: Date, days: number): Date {
   const result = new Date(start);
@@ -23,7 +24,9 @@ export default function GanttView() {
   const computeSchedule = useProjectStore((s) => s.computeSchedule);
   const loading = useProjectStore((s) => s.loading);
   const containerRef = useRef<HTMLDivElement>(null);
+  const ganttContainerRef = useRef<HTMLDivElement>(null);
   const ganttRef = useRef<Gantt | null>(null);
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   const ganttTasks = useMemo(() => {
     if (!schedule) return [];
@@ -69,8 +72,22 @@ export default function GanttView() {
     );
   }
 
+  const handleExportPng = async () => {
+    setShowExportMenu(false);
+    if (ganttContainerRef.current) {
+      await exportGanttAsPng(ganttContainerRef.current, "gantt-schedule.png");
+    }
+  };
+
+  const handleExportHtml = () => {
+    setShowExportMenu(false);
+    if (schedule) {
+      exportGanttAsHtml(schedule, "gantt-schedule.html");
+    }
+  };
+
   return (
-    <div className="gantt-container">
+    <div className="gantt-container" ref={ganttContainerRef}>
       <div className="gantt-toolbar">
         <button
           onClick={() => computeSchedule()}
@@ -80,11 +97,27 @@ export default function GanttView() {
           {loading ? "Computing..." : "Generate Schedule"}
         </button>
         {schedule && (
-          <div className="schedule-summary">
-            <span>Total: {schedule.total_hours}h</span>
-            <span>Sprints: {schedule.total_sprints}</span>
-            <span>Capacity/Sprint: {schedule.capacity_per_sprint.toFixed(1)}h</span>
-          </div>
+          <>
+            <div className="schedule-summary">
+              <span>Total: {schedule.total_hours}h</span>
+              <span>Sprints: {schedule.total_sprints}</span>
+              <span>Capacity/Sprint: {schedule.capacity_per_sprint.toFixed(1)}h</span>
+            </div>
+            <div className="export-dropdown">
+              <button
+                className="btn-small"
+                onClick={() => setShowExportMenu(!showExportMenu)}
+              >
+                Export
+              </button>
+              {showExportMenu && (
+                <div className="export-menu">
+                  <button onClick={handleExportPng}>Save as PNG</button>
+                  <button onClick={handleExportHtml}>Save as HTML</button>
+                </div>
+              )}
+            </div>
+          </>
         )}
       </div>
       {schedule ? (

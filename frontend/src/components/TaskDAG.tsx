@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -18,6 +18,10 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useProjectStore } from "../store/useProjectStore";
 import type { TaskNode as TaskNodeType } from "../types/task";
+import {
+  exportReactFlowAsPng,
+  exportDAGAsHtml,
+} from "../utils/exportUtils";
 
 const PRIORITY_COLORS: Record<string, string> = {
   critical: "#ef4444",
@@ -151,67 +155,170 @@ function TaskFlowNode({ data }: NodeProps<Node<TaskNodeData>>) {
 
 const nodeTypes = { taskNode: TaskFlowNode };
 
+interface FlatTask {
+  task: TaskNodeType;
+  parentId: string | null;
+}
+
+function flattenTasks(tasks: TaskNodeType[], parentId: string | null = null): FlatTask[] {
+  const result: FlatTask[] = [];
+  for (const t of tasks) {
+    result.push({ task: t, parentId });
+    if (t.children.length > 0) {
+      result.push(...flattenTasks(t.children, t.id));
+    }
+  }
+  return result;
+}
+
 function flattenToNodesEdges(
   tasks: TaskNodeType[],
   expandingTaskId: string | null,
-  xOffset = 0,
-  yOffset = 0
 ): { nodes: Node<TaskNodeData>[]; edges: Edge[] } {
   const nodes: Node<TaskNodeData>[] = [];
   const edges: Edge[] = [];
-  const xSpacing = 280;
-  const ySpacing = 160;
 
-  function process(items: TaskNodeType[], depth: number, startX: number) {
-    items.forEach((task, i) => {
-      const x = startX + i * xSpacing;
-      const y = depth * ySpacing + yOffset;
+  // 1. Flatten all tasks including nested children
+  const flatTasks = flattenTasks(tasks);
+  if (flatTasks.length === 0) return { nodes, edges };
+
+  const taskMap = new Map<string, FlatTask>();
+  for (const ft of flatTasks) {
+    taskMap.set(ft.task.id, ft);
+  }
+
+  // 2. Collect all directed edges (deps + parent-child)
+  const allEdges: { source: string; target: string; type: "dep" | "child" }[] = [];
+  for (const ft of flatTasks) {
+    for (const depId of ft.task.dependencies) {
+      if (taskMap.has(depId)) {
+        allEdges.push({ source: depId, target: ft.task.id, type: "dep" });
+      }
+    }
+    if (ft.parentId && taskMap.has(ft.parentId)) {
+      allEdges.push({ source: ft.parentId, target: ft.task.id, type: "child" });
+    }
+  }
+
+  // 3. Longest-path layering (layer = max predecessor layer + 1)
+  const predecessors = new Map<string, string[]>();
+  for (const ft of flatTasks) predecessors.set(ft.task.id, []);
+  for (const e of allEdges) predecessors.get(e.target)?.push(e.source);
+
+  const layerOf = new Map<string, number>();
+  const computing = new Set<string>();
+
+  function computeLayer(id: string): number {
+    if (layerOf.has(id)) return layerOf.get(id)!;
+    if (computing.has(id)) return 0; // circular safeguard
+    computing.add(id);
+    const preds = predecessors.get(id) || [];
+    const layer = preds.length === 0 ? 0 : Math.max(...preds.map(computeLayer)) + 1;
+    layerOf.set(id, layer);
+    computing.delete(id);
+    return layer;
+  }
+
+  for (const ft of flatTasks) computeLayer(ft.task.id);
+
+  // 4. Group by layer
+  const layerGroups = new Map<number, string[]>();
+  for (const ft of flatTasks) {
+    const layer = layerOf.get(ft.task.id) ?? 0;
+    if (!layerGroups.has(layer)) layerGroups.set(layer, []);
+    layerGroups.get(layer)!.push(ft.task.id);
+  }
+
+  const sortedLayers = [...layerGroups.keys()].sort((a, b) => a - b);
+
+  // 5. Barycentric ordering pass to reduce edge crossings
+  //    Order each layer's nodes by average x of their predecessors
+  const xPos = new Map<string, number>();
+
+  // Initial ordering: first layer centered, subsequent layers sorted by predecessor avg
+  for (const layerIdx of sortedLayers) {
+    const layerNodes = layerGroups.get(layerIdx)!;
+    if (layerIdx === sortedLayers[0]) {
+      layerNodes.forEach((id, i) => xPos.set(id, i));
+    } else {
+      const scored = layerNodes.map((id) => {
+        const preds = (predecessors.get(id) || []).filter((p) => xPos.has(p));
+        const avg = preds.length > 0
+          ? preds.reduce((sum, p) => sum + (xPos.get(p) ?? 0), 0) / preds.length
+          : Infinity;
+        return { id, avg };
+      });
+      scored.sort((a, b) => a.avg - b.avg);
+      scored.forEach((s, i) => xPos.set(s.id, i));
+    }
+  }
+
+  // 6. Position nodes
+  const NODE_W = 260;
+  const X_GAP = 40;
+  const Y_GAP = 170;
+  const Y_START = 50;
+  const X_START = 50;
+
+  const maxLayerSize = Math.max(...sortedLayers.map((l) => layerGroups.get(l)!.length));
+  const totalWidth = maxLayerSize * (NODE_W + X_GAP);
+
+  for (const layerIdx of sortedLayers) {
+    const layerNodes = layerGroups.get(layerIdx)!;
+    // Sort by barycentric position
+    layerNodes.sort((a, b) => (xPos.get(a) ?? 0) - (xPos.get(b) ?? 0));
+    const layerWidth = layerNodes.length * (NODE_W + X_GAP) - X_GAP;
+    const startX = X_START + Math.max(0, (totalWidth - layerWidth) / 2);
+
+    layerNodes.forEach((id, i) => {
+      const ft = taskMap.get(id)!;
+      const x = startX + i * (NODE_W + X_GAP);
+      const y = Y_START + layerIdx * Y_GAP;
+
       nodes.push({
-        id: task.id,
+        id,
         type: "taskNode",
         position: { x, y },
         data: {
-          label: task.title,
+          label: ft.task.title,
           description:
-            task.description.length > 60
-              ? task.description.slice(0, 60) + "..."
-              : task.description,
-          hours: task.estimated_hours,
-          priority: task.priority,
-          taskId: task.id,
-          hasChildren: task.children.length > 0,
-          isExpanding: expandingTaskId === task.id,
+            ft.task.description.length > 60
+              ? ft.task.description.slice(0, 60) + "..."
+              : ft.task.description,
+          hours: ft.task.estimated_hours,
+          priority: ft.task.priority,
+          taskId: id,
+          hasChildren: ft.task.children.length > 0,
+          isExpanding: expandingTaskId === id,
         },
       });
-
-      for (const depId of task.dependencies) {
-        edges.push({
-          id: `e-${depId}-${task.id}`,
-          source: depId,
-          target: task.id,
-          animated: true,
-          style: { stroke: "#64748b" },
-        });
-      }
-
-      if (task.children.length > 0) {
-        process(task.children, depth + 1, x - ((task.children.length - 1) * xSpacing) / 2);
-        for (const child of task.children) {
-          const edgeId = `e-${task.id}-${child.id}`;
-          if (!edges.find((e) => e.id === edgeId)) {
-            edges.push({
-              id: edgeId,
-              source: task.id,
-              target: child.id,
-              style: { stroke: "#94a3b8", strokeDasharray: "5,5" },
-            });
-          }
-        }
-      }
     });
   }
 
-  process(tasks, 0, xOffset);
+  // 7. Create ReactFlow edges
+  const edgeIds = new Set<string>();
+  for (const e of allEdges) {
+    const edgeId = `e-${e.source}-${e.target}`;
+    if (edgeIds.has(edgeId)) continue;
+    edgeIds.add(edgeId);
+    if (e.type === "dep") {
+      edges.push({
+        id: edgeId,
+        source: e.source,
+        target: e.target,
+        animated: true,
+        style: { stroke: "#64748b" },
+      });
+    } else {
+      edges.push({
+        id: edgeId,
+        source: e.source,
+        target: e.target,
+        style: { stroke: "#94a3b8", strokeDasharray: "5,5" },
+      });
+    }
+  }
+
   return { nodes, edges };
 }
 
@@ -337,9 +444,11 @@ export default function TaskDAG() {
   const expandingTaskId = useProjectStore((s) => s.expandingTaskId);
 
   const [showAddDialog, setShowAddDialog] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const dagContainerRef = useRef<HTMLDivElement>(null);
 
   const { nodes: initialNodes, edges: initialEdges } = useMemo(
-    () => flattenToNodesEdges(tasks, expandingTaskId, 100, 50),
+    () => flattenToNodesEdges(tasks, expandingTaskId),
     [tasks, expandingTaskId]
   );
 
@@ -392,8 +501,20 @@ export default function TaskDAG() {
     );
   }
 
+  const handleExportPng = async () => {
+    setShowExportMenu(false);
+    if (dagContainerRef.current) {
+      await exportReactFlowAsPng(dagContainerRef.current, "task-dag.png");
+    }
+  };
+
+  const handleExportHtml = () => {
+    setShowExportMenu(false);
+    exportDAGAsHtml(tasks, "task-dag.html");
+  };
+
   return (
-    <div className="dag-container">
+    <div className="dag-container" ref={dagContainerRef}>
       <div className="dag-toolbar">
         <button onClick={() => setShowAddDialog(!showAddDialog)} className="btn-small">
           + Add Task
@@ -401,6 +522,20 @@ export default function TaskDAG() {
         <button onClick={() => validateGraph()} className="btn-small">
           Validate
         </button>
+        <div className="export-dropdown">
+          <button
+            className="btn-small"
+            onClick={() => setShowExportMenu(!showExportMenu)}
+          >
+            Export
+          </button>
+          {showExportMenu && (
+            <div className="export-menu">
+              <button onClick={handleExportPng}>Save as PNG</button>
+              <button onClick={handleExportHtml}>Save as HTML</button>
+            </div>
+          )}
+        </div>
         {validation && (
           <span className={`validation-badge ${validation.valid ? "valid" : "invalid"}`}>
             {validation.valid

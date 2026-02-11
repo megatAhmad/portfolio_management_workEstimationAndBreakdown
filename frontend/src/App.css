@@ -769,6 +769,45 @@ body {
   background: #6b7280;
 }
 
+/* ── Export Dropdown ───────────────────────────────────── */
+.export-dropdown {
+  position: relative;
+}
+
+.export-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  z-index: 50;
+  min-width: 150px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.export-menu button {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 0.8rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.export-menu button:hover {
+  background: var(--bg-surface);
+}
+
+.export-menu button:not(:last-child) {
+  border-bottom: 1px solid var(--border);
+}
+
 /* ── React Flow Overrides ──────────────────────────────── */
 .react-flow__background {
   background: var(--bg-surface) !important;
