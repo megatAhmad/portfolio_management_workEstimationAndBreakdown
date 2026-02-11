@@ -20,6 +20,11 @@ class TeamMember(BaseModel):
 
 class DecomposeRequest(BaseModel):
     prompt: str = Field(min_length=1, description="Natural language feature request")
+    mode: str = Field(
+        default="full_project",
+        pattern="^(full_project|ai_ds_experiment)$",
+        description="Decomposition mode: full end-to-end digital project, or AI/DS experiment focused on PoC modelling",
+    )
     repo_context: str | None = Field(
         default=None,
         description="GitHub/GitLab branch URL or directory file listing",
@@ -31,6 +36,18 @@ class DecomposeRequest(BaseModel):
     sprint_days: int = Field(default=10, gt=0, description="Number of days per sprint")
     buffer_percent: float = Field(
         default=0.2, ge=0, le=1, description="Safety buffer percentage"
+    )
+
+
+class ExpandTaskRequest(BaseModel):
+    task: TaskNode = Field(description="The task to break down further")
+    user_context: str | None = Field(
+        default=None,
+        description="Optional user guidance for how to subdivide this task",
+    )
+    mode: str = Field(
+        default="full_project",
+        pattern="^(full_project|ai_ds_experiment)$",
     )
 
 

@@ -13,13 +13,27 @@ export interface TeamMember {
   hours_per_week: number;
 }
 
+export type DecomposeMode = "full_project" | "ai_ds_experiment";
+
 export interface DecomposeRequest {
   prompt: string;
+  mode: DecomposeMode;
   repo_context?: string | null;
   team_members: TeamMember[];
   hours_per_week_default: number;
   sprint_days: number;
   buffer_percent: number;
+}
+
+export interface ExpandTaskRequest {
+  task: TaskNode;
+  user_context?: string | null;
+  mode: DecomposeMode;
+}
+
+export interface ExpandTaskResponse {
+  parent_id: string;
+  subtasks: TaskNode[];
 }
 
 export interface DecomposeResponse {

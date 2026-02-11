@@ -1,6 +1,8 @@
 import type {
   DecomposeRequest,
   DecomposeResponse,
+  ExpandTaskRequest,
+  ExpandTaskResponse,
   ScheduleResponse,
   TaskNode,
   ValidationResult,
@@ -51,4 +53,10 @@ export async function validateTasks(
   tasks: TaskNode[]
 ): Promise<ValidationResult> {
   return request<ValidationResult>("/validate", tasks);
+}
+
+export async function expandTask(
+  req: ExpandTaskRequest
+): Promise<ExpandTaskResponse> {
+  return request<ExpandTaskResponse>("/expand-task", req);
 }

@@ -3,10 +3,11 @@ from fastapi import APIRouter, HTTPException
 from app.models.task import (
     DecomposeRequest,
     DecomposeResponse,
+    ExpandTaskRequest,
     ScheduleResponse,
     TaskNode,
 )
-from app.services.ai_decomposer import decompose_tasks
+from app.services.ai_decomposer import decompose_tasks, expand_task
 from app.services.graph_validator import (
     compute_total_hours,
     detect_circular_dependencies,
@@ -103,3 +104,14 @@ async def validate(tasks: list[TaskNode]):
         "circular_dependency_errors": cycle_errors,
         "total_estimated_hours": total_hours,
     }
+
+
+@router.post("/expand-task")
+async def expand_task_endpoint(req: ExpandTaskRequest):
+    """Use AI to break a single task into smaller subtasks."""
+    try:
+        subtasks = await expand_task(req)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI service error: {e}") from e
+
+    return {"parent_id": req.task.id, "subtasks": subtasks}

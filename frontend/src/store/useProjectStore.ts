@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  DecomposeMode,
   DecomposeRequest,
   ScheduleResponse,
   TaskNode,
@@ -8,6 +9,7 @@ import type {
 } from "../types/task";
 import {
   decomposeTasks,
+  expandTask,
   scheduleFromTasks,
   validateTasks,
 } from "../api/client";
@@ -17,6 +19,7 @@ export type ViewMode = "dag" | "gantt";
 interface ProjectState {
   // Input state
   prompt: string;
+  mode: DecomposeMode;
   repoContext: string;
   teamMembers: TeamMember[];
   sprintDays: number;
@@ -34,10 +37,12 @@ interface ProjectState {
   // UI state
   viewMode: ViewMode;
   loading: boolean;
+  expandingTaskId: string | null;
   error: string | null;
 
   // Actions
   setPrompt: (prompt: string) => void;
+  setMode: (mode: DecomposeMode) => void;
   setRepoContext: (ctx: string) => void;
   setTeamMembers: (members: TeamMember[]) => void;
   addTeamMember: (member: TeamMember) => void;
@@ -51,6 +56,8 @@ interface ProjectState {
   addDependency: (fromId: string, toId: string) => void;
   removeDependency: (fromId: string, toId: string) => void;
   deleteTask: (taskId: string) => void;
+  addTask: (task: TaskNode) => void;
+  expandTaskWithAI: (taskId: string, userContext?: string) => Promise<void>;
   generateTasks: () => Promise<void>;
   computeSchedule: () => Promise<void>;
   validateGraph: () => Promise<void>;
@@ -67,6 +74,33 @@ function updateTaskInTree(
     }
     if (t.children.length > 0) {
       return { ...t, children: updateTaskInTree(t.children, taskId, updates) };
+    }
+    return t;
+  });
+}
+
+function findTaskInTree(tasks: TaskNode[], taskId: string): TaskNode | null {
+  for (const t of tasks) {
+    if (t.id === taskId) return t;
+    if (t.children.length > 0) {
+      const found = findTaskInTree(t.children, taskId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function setChildrenInTree(
+  tasks: TaskNode[],
+  taskId: string,
+  children: TaskNode[]
+): TaskNode[] {
+  return tasks.map((t) => {
+    if (t.id === taskId) {
+      return { ...t, children };
+    }
+    if (t.children.length > 0) {
+      return { ...t, children: setChildrenInTree(t.children, taskId, children) };
     }
     return t;
   });
@@ -117,6 +151,7 @@ function removeDepInTree(
 export const useProjectStore = create<ProjectState>((set, get) => ({
   // Input defaults
   prompt: "",
+  mode: "full_project",
   repoContext: "",
   teamMembers: [],
   sprintDays: 10,
@@ -134,10 +169,12 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   // UI defaults
   viewMode: "dag",
   loading: false,
+  expandingTaskId: null,
   error: null,
 
   // Setters
   setPrompt: (prompt) => set({ prompt }),
+  setMode: (mode) => set({ mode }),
   setRepoContext: (repoContext) => set({ repoContext }),
   setTeamMembers: (teamMembers) => set({ teamMembers }),
   addTeamMember: (member) =>
@@ -164,12 +201,37 @@ export const useProjectStore = create<ProjectState>((set, get) => ({
   deleteTask: (taskId) =>
     set((s) => ({ tasks: deleteTaskFromTree(s.tasks, taskId) })),
 
+  addTask: (task) =>
+    set((s) => ({ tasks: [...s.tasks, task] })),
+
+  expandTaskWithAI: async (taskId, userContext) => {
+    const state = get();
+    const task = findTaskInTree(state.tasks, taskId);
+    if (!task) return;
+
+    set({ expandingTaskId: taskId, error: null });
+    try {
+      const resp = await expandTask({
+        task,
+        user_context: userContext || null,
+        mode: state.mode,
+      });
+      set((s) => ({
+        tasks: setChildrenInTree(s.tasks, taskId, resp.subtasks),
+        expandingTaskId: null,
+      }));
+    } catch (e) {
+      set({ error: (e as Error).message, expandingTaskId: null });
+    }
+  },
+
   generateTasks: async () => {
     const state = get();
     set({ loading: true, error: null });
     try {
       const req: DecomposeRequest = {
         prompt: state.prompt,
+        mode: state.mode,
         repo_context: state.repoContext || null,
         team_members: state.teamMembers,
         hours_per_week_default: state.hoursPerWeekDefault,

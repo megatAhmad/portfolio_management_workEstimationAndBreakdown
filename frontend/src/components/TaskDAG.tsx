@@ -32,12 +32,18 @@ interface TaskNodeData extends Record<string, unknown> {
   hours: number;
   priority: string;
   taskId: string;
+  hasChildren: boolean;
+  isExpanding: boolean;
 }
 
 function TaskFlowNode({ data }: NodeProps<Node<TaskNodeData>>) {
   const updateTask = useProjectStore((s) => s.updateTask);
+  const expandTaskWithAI = useProjectStore((s) => s.expandTaskWithAI);
+  const deleteTask = useProjectStore((s) => s.deleteTask);
   const [editing, setEditing] = useState(false);
   const [editHours, setEditHours] = useState(data.hours);
+  const [showExpandPrompt, setShowExpandPrompt] = useState(false);
+  const [expandContext, setExpandContext] = useState("");
 
   const handleDoubleClick = () => {
     setEditHours(data.hours);
@@ -54,6 +60,12 @@ function TaskFlowNode({ data }: NodeProps<Node<TaskNodeData>>) {
     if (e.key === "Escape") setEditing(false);
   };
 
+  const handleExpand = () => {
+    expandTaskWithAI(data.taskId, expandContext || undefined);
+    setShowExpandPrompt(false);
+    setExpandContext("");
+  };
+
   return (
     <div
       className="task-node"
@@ -61,8 +73,59 @@ function TaskFlowNode({ data }: NodeProps<Node<TaskNodeData>>) {
       onDoubleClick={handleDoubleClick}
     >
       <Handle type="target" position={Position.Top} />
-      <div className="task-node-title">{data.label}</div>
+      <div className="task-node-header">
+        <div className="task-node-title">{data.label}</div>
+        <div className="task-node-actions">
+          <button
+            className="node-action-btn expand-btn"
+            title={data.hasChildren ? "Re-expand with AI" : "Break down with AI"}
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowExpandPrompt(!showExpandPrompt);
+            }}
+            disabled={data.isExpanding}
+          >
+            {data.isExpanding ? "..." : data.hasChildren ? "Re" : "+AI"}
+          </button>
+          <button
+            className="node-action-btn delete-btn"
+            title="Delete task"
+            onClick={(e) => {
+              e.stopPropagation();
+              deleteTask(data.taskId);
+            }}
+          >
+            x
+          </button>
+        </div>
+      </div>
       <div className="task-node-desc">{data.description}</div>
+
+      {showExpandPrompt && (
+        <div className="expand-prompt-area" onClick={(e) => e.stopPropagation()}>
+          <input
+            type="text"
+            placeholder="Optional guidance for AI..."
+            value={expandContext}
+            onChange={(e) => setExpandContext(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleExpand();
+              if (e.key === "Escape") setShowExpandPrompt(false);
+            }}
+            autoFocus
+            className="expand-input"
+          />
+          <div className="expand-actions">
+            <button className="btn-tiny primary" onClick={handleExpand}>
+              Expand
+            </button>
+            <button className="btn-tiny" onClick={() => setShowExpandPrompt(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="task-node-hours">
         {editing ? (
           <input
@@ -90,6 +153,7 @@ const nodeTypes = { taskNode: TaskFlowNode };
 
 function flattenToNodesEdges(
   tasks: TaskNodeType[],
+  expandingTaskId: string | null,
   xOffset = 0,
   yOffset = 0
 ): { nodes: Node<TaskNodeData>[]; edges: Edge[] } {
@@ -115,6 +179,8 @@ function flattenToNodesEdges(
           hours: task.estimated_hours,
           priority: task.priority,
           taskId: task.id,
+          hasChildren: task.children.length > 0,
+          isExpanding: expandingTaskId === task.id,
         },
       });
 
@@ -130,7 +196,6 @@ function flattenToNodesEdges(
 
       if (task.children.length > 0) {
         process(task.children, depth + 1, x - ((task.children.length - 1) * xSpacing) / 2);
-        // Add implicit parent->child edges
         for (const child of task.children) {
           const edgeId = `e-${task.id}-${child.id}`;
           if (!edges.find((e) => e.id === edgeId)) {
@@ -150,6 +215,117 @@ function flattenToNodesEdges(
   return { nodes, edges };
 }
 
+function AddTaskDialog({
+  onAdd,
+  onCancel,
+  existingIds,
+}: {
+  onAdd: (task: TaskNodeType) => void;
+  onCancel: () => void;
+  existingIds: string[];
+}) {
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [hours, setHours] = useState(4);
+  const [priority, setPriority] = useState<TaskNodeType["priority"]>("medium");
+  const [depInput, setDepInput] = useState("");
+
+  const nextId = String(
+    Math.max(0, ...existingIds.map((id) => Number(id.split(".")[0]) || 0)) + 1
+  );
+
+  const handleSubmit = () => {
+    if (!title.trim()) return;
+    const deps = depInput
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    onAdd({
+      id: nextId,
+      title: title.trim(),
+      description: description.trim(),
+      estimated_hours: hours,
+      dependencies: deps,
+      priority,
+      children: [],
+    });
+  };
+
+  return (
+    <div className="add-task-dialog">
+      <h4>Add New Task</h4>
+      <div className="dialog-field">
+        <label>ID</label>
+        <input type="text" value={nextId} disabled />
+      </div>
+      <div className="dialog-field">
+        <label>Title</label>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Task title"
+          autoFocus
+        />
+      </div>
+      <div className="dialog-field">
+        <label>Description</label>
+        <input
+          type="text"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+          placeholder="Brief description"
+        />
+      </div>
+      <div className="dialog-row">
+        <div className="dialog-field">
+          <label>Hours</label>
+          <input
+            type="number"
+            value={hours}
+            onChange={(e) => setHours(Number(e.target.value))}
+            min={0}
+            step={0.5}
+          />
+        </div>
+        <div className="dialog-field">
+          <label>Priority</label>
+          <select value={priority} onChange={(e) => setPriority(e.target.value as TaskNodeType["priority"])}>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </div>
+      </div>
+      <div className="dialog-field">
+        <label>Dependencies (comma-separated IDs)</label>
+        <input
+          type="text"
+          value={depInput}
+          onChange={(e) => setDepInput(e.target.value)}
+          placeholder="e.g. 1, 2.1"
+        />
+      </div>
+      <div className="dialog-actions">
+        <button className="btn-small" onClick={onCancel}>Cancel</button>
+        <button className="btn-primary btn-sm" onClick={handleSubmit} disabled={!title.trim()}>
+          Add Task
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function collectIds(tasks: TaskNodeType[]): string[] {
+  const ids: string[] = [];
+  for (const t of tasks) {
+    ids.push(t.id);
+    if (t.children.length > 0) ids.push(...collectIds(t.children));
+  }
+  return ids;
+}
+
 export default function TaskDAG() {
   const tasks = useProjectStore((s) => s.tasks);
   const addDependency = useProjectStore((s) => s.addDependency);
@@ -157,16 +333,19 @@ export default function TaskDAG() {
   const deleteTask = useProjectStore((s) => s.deleteTask);
   const validateGraph = useProjectStore((s) => s.validateGraph);
   const validation = useProjectStore((s) => s.validation);
+  const addTask = useProjectStore((s) => s.addTask);
+  const expandingTaskId = useProjectStore((s) => s.expandingTaskId);
+
+  const [showAddDialog, setShowAddDialog] = useState(false);
 
   const { nodes: initialNodes, edges: initialEdges } = useMemo(
-    () => flattenToNodesEdges(tasks, 100, 50),
-    [tasks]
+    () => flattenToNodesEdges(tasks, expandingTaskId, 100, 50),
+    [tasks, expandingTaskId]
   );
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
 
-  // Sync when tasks change externally
   useMemo(() => {
     setNodes(initialNodes);
     setEdges(initialEdges);
@@ -200,6 +379,11 @@ export default function TaskDAG() {
     [deleteTask]
   );
 
+  const handleAddTask = (task: TaskNodeType) => {
+    addTask(task);
+    setShowAddDialog(false);
+  };
+
   if (tasks.length === 0) {
     return (
       <div className="dag-empty">
@@ -211,8 +395,11 @@ export default function TaskDAG() {
   return (
     <div className="dag-container">
       <div className="dag-toolbar">
+        <button onClick={() => setShowAddDialog(!showAddDialog)} className="btn-small">
+          + Add Task
+        </button>
         <button onClick={() => validateGraph()} className="btn-small">
-          Validate Graph
+          Validate
         </button>
         {validation && (
           <span className={`validation-badge ${validation.valid ? "valid" : "invalid"}`}>
@@ -222,9 +409,20 @@ export default function TaskDAG() {
           </span>
         )}
         <span className="dag-hint">
-          Drag between handles to create dependencies. Double-click edges to remove. Right-click nodes to delete. Double-click nodes to edit hours.
+          Drag handles to connect. Double-click edges to disconnect. Click +AI on nodes to expand.
         </span>
       </div>
+
+      {showAddDialog && (
+        <div className="dialog-overlay">
+          <AddTaskDialog
+            onAdd={handleAddTask}
+            onCancel={() => setShowAddDialog(false)}
+            existingIds={collectIds(tasks)}
+          />
+        </div>
+      )}
+
       <ReactFlow
         nodes={nodes}
         edges={edges}
