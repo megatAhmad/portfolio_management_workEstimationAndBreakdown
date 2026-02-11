@@ -2,9 +2,6 @@ import { toPng } from "html-to-image";
 import type { TaskNode } from "../types/task";
 import type { ScheduleResponse } from "../types/task";
 
-/**
- * Download a data URL or blob as a file.
- */
 function downloadFile(content: string, filename: string, mime: string) {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
@@ -17,7 +14,7 @@ function downloadFile(content: string, filename: string, mime: string) {
   URL.revokeObjectURL(url);
 }
 
-function downloadDataUrl(dataUrl: string, filename: string) {
+export function downloadDataUrl(dataUrl: string, filename: string) {
   const a = document.createElement("a");
   a.href = dataUrl;
   a.download = filename;
@@ -26,61 +23,54 @@ function downloadDataUrl(dataUrl: string, filename: string) {
   document.body.removeChild(a);
 }
 
-/**
- * Export a DOM element as PNG using html-to-image.
- */
-export async function exportElementAsPng(
-  element: HTMLElement,
-  filename: string
-) {
-  const dataUrl = await toPng(element, {
-    backgroundColor: "#0f172a",
-    pixelRatio: 2,
-  });
-  downloadDataUrl(dataUrl, filename);
-}
-
-/**
- * Export the React Flow viewport as PNG.
- * We target the .react-flow__viewport inside the container.
- */
-export async function exportReactFlowAsPng(
-  containerEl: HTMLElement,
-  filename: string
-) {
-  const viewport =
-    containerEl.querySelector<HTMLElement>(".react-flow__viewport");
-  if (!viewport) return;
-
-  // Temporarily expand viewport to fit all content
-  const rf = containerEl.querySelector<HTMLElement>(".react-flow");
-  if (!rf) return;
-
-  const dataUrl = await toPng(rf, {
-    backgroundColor: "#0f172a",
-    pixelRatio: 2,
-    filter: (node) => {
-      // Exclude minimap and controls from the export
-      const cls = (node as HTMLElement).className || "";
-      if (typeof cls === "string") {
-        if (cls.includes("react-flow__minimap")) return false;
-        if (cls.includes("react-flow__controls")) return false;
-      }
-      return true;
-    },
-  });
-  downloadDataUrl(dataUrl, filename);
-}
+export { toPng };
 
 /**
  * Build a self-contained interactive HTML file from the task DAG.
+ * Uses the same topological-layered layout as the in-app view,
+ * includes both dependency and parent-child edges, and measures
+ * actual node heights before drawing edges.
  */
 export function exportDAGAsHtml(tasks: TaskNode[], filename: string) {
-  const flatTasks = flattenAll(tasks);
-  const edges: { from: string; to: string }[] = [];
+  interface FlatExport {
+    id: string;
+    title: string;
+    description: string;
+    hours: number;
+    priority: string;
+    deps: string[];
+    parentId: string | null;
+  }
+
+  function flatten(items: TaskNode[], parentId: string | null): FlatExport[] {
+    const out: FlatExport[] = [];
+    for (const t of items) {
+      out.push({
+        id: t.id,
+        title: t.title,
+        description: t.description,
+        hours: t.estimated_hours,
+        priority: t.priority,
+        deps: t.dependencies,
+        parentId,
+      });
+      if (t.children.length > 0) out.push(...flatten(t.children, t.id));
+    }
+    return out;
+  }
+
+  const flatTasks = flatten(tasks, null);
+  const depEdges: { from: string; to: string }[] = [];
+  const childEdges: { from: string; to: string }[] = [];
+
   for (const t of flatTasks) {
-    for (const dep of t.dependencies) {
-      edges.push({ from: dep, to: t.id });
+    for (const dep of t.deps) {
+      if (flatTasks.some((ft) => ft.id === dep)) {
+        depEdges.push({ from: dep, to: t.id });
+      }
+    }
+    if (t.parentId && flatTasks.some((ft) => ft.id === t.parentId)) {
+      childEdges.push({ from: t.parentId, to: t.id });
     }
   }
 
@@ -89,12 +79,10 @@ export function exportDAGAsHtml(tasks: TaskNode[], filename: string) {
       id: t.id,
       title: t.title,
       description: t.description,
-      hours: t.estimated_hours,
+      hours: t.hours,
       priority: t.priority,
-      deps: t.dependencies,
     }))
   );
-  const edgesJson = JSON.stringify(edges);
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -105,17 +93,17 @@ export function exportDAGAsHtml(tasks: TaskNode[], filename: string) {
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0f172a; color: #e2e8f0; font-family: system-ui, sans-serif; overflow: auto; }
-  h1 { padding: 1rem 1.5rem; font-size: 1.2rem; border-bottom: 1px solid #475569; background: #1e293b; }
-  .canvas { position: relative; min-width: 100vw; min-height: 100vh; }
-  svg.edges { position: absolute; top: 0; left: 0; pointer-events: none; }
+  .header { padding: 1rem 1.5rem; font-size: 1.2rem; font-weight: 700; border-bottom: 1px solid #475569; background: #1e293b; position: sticky; top: 0; z-index: 100; }
+  .canvas { position: relative; }
+  svg.edges { position: absolute; top: 0; left: 0; pointer-events: none; z-index: 1; }
   .node {
     position: absolute; background: #334155; border: 1px solid #475569;
-    border-radius: 8px; padding: 10px 12px; min-width: 200px; max-width: 260px;
-    font-size: 13px; cursor: move; user-select: none;
+    border-radius: 8px; padding: 10px 12px; width: 240px;
+    font-size: 13px; cursor: move; user-select: none; z-index: 2;
   }
-  .node:hover { border-color: #3b82f6; }
-  .node-title { font-weight: 600; margin-bottom: 4px; }
-  .node-desc { color: #94a3b8; font-size: 11px; margin-bottom: 6px; line-height: 1.3; }
+  .node:hover { border-color: #3b82f6; box-shadow: 0 0 8px rgba(59,130,246,0.3); }
+  .node-title { font-weight: 600; margin-bottom: 4px; font-size: 13px; }
+  .node-desc { color: #94a3b8; font-size: 11px; margin-bottom: 6px; line-height: 1.3; word-wrap: break-word; }
   .node-meta { display: flex; justify-content: space-between; align-items: center; }
   .badge {
     padding: 2px 8px; border-radius: 999px; font-size: 10px;
@@ -129,94 +117,218 @@ export function exportDAGAsHtml(tasks: TaskNode[], filename: string) {
 </style>
 </head>
 <body>
-<h1>Task DAG - AI-Ops Task Architect</h1>
+<div class="header">Task DAG - AI-Ops Task Architect</div>
 <div class="canvas" id="canvas">
   <svg class="edges" id="edgeSvg"></svg>
 </div>
 <script>
 const TASKS = ${nodesJson};
-const EDGES = ${edgesJson};
+const DEP_EDGES = ${JSON.stringify(depEdges)};
+const CHILD_EDGES = ${JSON.stringify(childEdges)};
+const ALL_EDGES = [...DEP_EDGES, ...CHILD_EDGES];
 const PRIO_COLORS = { critical:'#ef4444', high:'#f59e0b', medium:'#3b82f6', low:'#6b7280' };
-const W = 240, H = 120, XGAP = 60, YGAP = 60;
 
-// Layered layout
-const taskMap = Object.fromEntries(TASKS.map(t => [t.id, t]));
-const inDeg = {}; const adj = {};
-TASKS.forEach(t => { inDeg[t.id] = 0; adj[t.id] = []; });
-EDGES.forEach(e => { inDeg[e.to] = (inDeg[e.to]||0) + 1; adj[e.from] = adj[e.from] || []; adj[e.from].push(e.to); });
-const layers = []; const assigned = new Set(); const queue = TASKS.filter(t => (inDeg[t.id]||0) === 0).map(t => t.id);
-while (queue.length) {
-  const layer = [...queue]; layers.push(layer); layer.forEach(id => assigned.add(id));
-  const next = [];
-  layer.forEach(id => { (adj[id]||[]).forEach(to => { inDeg[to]--; if(inDeg[to]===0 && !assigned.has(to)) next.push(to); }); });
-  queue.length = 0; queue.push(...next);
+// Layout constants (matching in-app)
+const NODE_W = 240;
+const X_GAP = 40;
+const Y_GAP = 70;
+const X_START = 50;
+const Y_START = 60;
+
+// 1. Build predecessor map (both dep + child edges)
+const predecessors = {};
+TASKS.forEach(t => { predecessors[t.id] = []; });
+ALL_EDGES.forEach(e => {
+  if (predecessors[e.to]) predecessors[e.to].push(e.from);
+});
+
+// 2. Longest-path layering
+const layerOf = {};
+const computing = new Set();
+function computeLayer(id) {
+  if (layerOf[id] !== undefined) return layerOf[id];
+  if (computing.has(id)) return 0;
+  computing.add(id);
+  const preds = predecessors[id] || [];
+  const layer = preds.length === 0 ? 0 : Math.max(...preds.map(computeLayer)) + 1;
+  layerOf[id] = layer;
+  computing.delete(id);
+  return layer;
 }
-TASKS.forEach(t => { if (!assigned.has(t.id)) { layers.push([t.id]); assigned.add(t.id); } });
+TASKS.forEach(t => computeLayer(t.id));
 
-const pos = {};
-layers.forEach((layer, li) => {
-  const totalW = layer.length * W + (layer.length - 1) * XGAP;
-  const startX = Math.max(40, (Math.max(totalW, 600) - totalW) / 2);
-  layer.forEach((id, i) => { pos[id] = { x: startX + i * (W + XGAP), y: 60 + li * (H + YGAP) }; });
-});
-
-const canvas = document.getElementById('canvas');
-const maxX = Math.max(...Object.values(pos).map(p => p.x)) + W + 80;
-const maxY = Math.max(...Object.values(pos).map(p => p.y)) + H + 80;
-canvas.style.width = maxX + 'px'; canvas.style.height = maxY + 'px';
-
-const svg = document.getElementById('edgeSvg');
-svg.setAttribute('width', maxX); svg.setAttribute('height', maxY);
-
-// Draw edges
-EDGES.forEach(e => {
-  if (!pos[e.from] || !pos[e.to]) return;
-  const x1 = pos[e.from].x + W/2, y1 = pos[e.from].y + H;
-  const x2 = pos[e.to].x + W/2, y2 = pos[e.to].y;
-  const my = (y1+y2)/2;
-  const path = document.createElementNS('http://www.w3.org/2000/svg','path');
-  path.setAttribute('d', 'M'+x1+' '+y1+' C'+x1+' '+my+' '+x2+' '+my+' '+x2+' '+y2);
-  path.setAttribute('stroke','#64748b'); path.setAttribute('stroke-width','2');
-  path.setAttribute('fill','none'); path.setAttribute('marker-end','url(#arrow)');
-  svg.appendChild(path);
-});
-// Arrowhead
-const defs = document.createElementNS('http://www.w3.org/2000/svg','defs');
-defs.innerHTML = '<marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>';
-svg.prepend(defs);
-
-// Draw nodes (draggable)
+// 3. Group by layer
+const layerGroups = {};
 TASKS.forEach(t => {
-  const p = pos[t.id]; if(!p) return;
-  const div = document.createElement('div'); div.className = 'node'; div.id = 'node-'+t.id;
-  div.style.left = p.x+'px'; div.style.top = p.y+'px';
-  div.innerHTML = '<div class="prio-bar" style="background:'+PRIO_COLORS[t.priority]+'"></div>'
-    + '<div class="node-title">'+t.title+'</div>'
-    + '<div class="node-desc">'+t.description.slice(0,80)+'</div>'
-    + '<div class="node-meta"><span>'+t.hours+'h</span><span class="badge badge-'+t.priority+'">'+t.priority+'</span></div>';
-  // Drag
-  let dx=0,dy=0,mx=0,my=0,dragging=false;
-  div.onmousedown = e => { dragging=true; mx=e.clientX; my=e.clientY; };
-  document.addEventListener('mousemove', e => {
-    if(!dragging) return; dx=e.clientX-mx; dy=e.clientY-my; mx=e.clientX; my=e.clientY;
-    p.x+=dx; p.y+=dy; div.style.left=p.x+'px'; div.style.top=p.y+'px'; redrawEdges();
-  });
-  document.addEventListener('mouseup', () => { dragging=false; });
-  canvas.appendChild(div);
+  const l = layerOf[t.id] || 0;
+  if (!layerGroups[l]) layerGroups[l] = [];
+  layerGroups[l].push(t.id);
+});
+const sortedLayers = Object.keys(layerGroups).map(Number).sort((a, b) => a - b);
+
+// 4. Barycentric ordering to reduce edge crossings
+const xOrder = {};
+sortedLayers.forEach((layerIdx, li) => {
+  const layerNodes = layerGroups[layerIdx];
+  if (li === 0) {
+    layerNodes.forEach((id, i) => { xOrder[id] = i; });
+  } else {
+    const scored = layerNodes.map(id => {
+      const preds = (predecessors[id] || []).filter(p => xOrder[p] !== undefined);
+      const avg = preds.length > 0
+        ? preds.reduce((s, p) => s + xOrder[p], 0) / preds.length
+        : Infinity;
+      return { id, avg };
+    });
+    scored.sort((a, b) => a.avg - b.avg);
+    scored.forEach((s, i) => { xOrder[s.id] = i; });
+  }
 });
 
-function redrawEdges() {
-  svg.querySelectorAll('path').forEach(p => p.remove());
-  EDGES.forEach(e => {
-    if(!pos[e.from]||!pos[e.to]) return;
-    const x1=pos[e.from].x+W/2,y1=pos[e.from].y+H,x2=pos[e.to].x+W/2,y2=pos[e.to].y;
-    const my=(y1+y2)/2;
-    const path=document.createElementNS('http://www.w3.org/2000/svg','path');
-    path.setAttribute('d','M'+x1+' '+y1+' C'+x1+' '+my+' '+x2+' '+my+' '+x2+' '+y2);
-    path.setAttribute('stroke','#64748b');path.setAttribute('stroke-width','2');
-    path.setAttribute('fill','none');path.setAttribute('marker-end','url(#arrow)');
-    svg.appendChild(path);
+// 5. Compute initial positions (y will be adjusted after measuring heights)
+const maxLayerSize = Math.max(...sortedLayers.map(l => layerGroups[l].length));
+const totalW = maxLayerSize * (NODE_W + X_GAP);
+const pos = {};
+
+sortedLayers.forEach(layerIdx => {
+  const layerNodes = layerGroups[layerIdx];
+  layerNodes.sort((a, b) => (xOrder[a] || 0) - (xOrder[b] || 0));
+  const lw = layerNodes.length * (NODE_W + X_GAP) - X_GAP;
+  const startX = X_START + Math.max(0, (totalW - lw) / 2);
+  layerNodes.forEach((id, i) => {
+    pos[id] = {
+      x: startX + i * (NODE_W + X_GAP),
+      y: 0, // placeholder, set after height measurement
+      h: 0, // measured height
+      layer: layerIdx
+    };
   });
+});
+
+// 6. Render nodes into DOM
+const canvas = document.getElementById('canvas');
+const taskMap = Object.fromEntries(TASKS.map(t => [t.id, t]));
+const nodeEls = {};
+
+TASKS.forEach(t => {
+  const p = pos[t.id]; if (!p) return;
+  const div = document.createElement('div');
+  div.className = 'node';
+  div.id = 'node-' + t.id;
+  div.style.left = p.x + 'px';
+  div.style.top = '0px'; // temporary
+  div.style.width = NODE_W + 'px';
+  div.innerHTML =
+    '<div class="prio-bar" style="background:' + (PRIO_COLORS[t.priority] || '#3b82f6') + '"></div>' +
+    '<div class="node-title">' + escapeHtml(t.title) + '</div>' +
+    '<div class="node-desc">' + escapeHtml(t.description.length > 120 ? t.description.slice(0, 120) + '...' : t.description) + '</div>' +
+    '<div class="node-meta"><span>' + t.hours + 'h</span><span class="badge badge-' + t.priority + '">' + t.priority + '</span></div>';
+  canvas.appendChild(div);
+  nodeEls[t.id] = div;
+});
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// 7. Measure heights and assign final Y positions per layer
+requestAnimationFrame(() => {
+  // Measure
+  TASKS.forEach(t => {
+    const el = nodeEls[t.id];
+    if (el) pos[t.id].h = el.offsetHeight;
+  });
+
+  // Compute max height per layer
+  const layerMaxH = {};
+  sortedLayers.forEach(l => {
+    layerMaxH[l] = Math.max(...layerGroups[l].map(id => pos[id].h || 80));
+  });
+
+  // Assign Y positions: each layer's Y = sum of previous layers' heights + gaps
+  let currentY = Y_START;
+  sortedLayers.forEach(l => {
+    layerGroups[l].forEach(id => {
+      pos[id].y = currentY;
+      const el = nodeEls[id];
+      if (el) el.style.top = currentY + 'px';
+    });
+    currentY += layerMaxH[l] + Y_GAP;
+  });
+
+  // Resize canvas and SVG
+  const allPos = Object.values(pos);
+  const maxX = Math.max(...allPos.map(p => p.x)) + NODE_W + 80;
+  const maxY = Math.max(...allPos.map(p => p.y + p.h)) + 80;
+  canvas.style.width = maxX + 'px';
+  canvas.style.height = maxY + 'px';
+
+  const svg = document.getElementById('edgeSvg');
+  svg.setAttribute('width', maxX);
+  svg.setAttribute('height', maxY);
+
+  // Arrowhead markers
+  const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+  defs.innerHTML =
+    '<marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/></marker>' +
+    '<marker id="arrow-child" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/></marker>';
+  svg.appendChild(defs);
+
+  // Draw all edges
+  drawAllEdges();
+
+  // Setup drag for each node
+  TASKS.forEach(t => {
+    const el = nodeEls[t.id];
+    if (!el) return;
+    let dragging = false, mx = 0, my = 0;
+    el.addEventListener('mousedown', e => {
+      dragging = true; mx = e.clientX; my = e.clientY;
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', e => {
+      if (!dragging) return;
+      const dx = e.clientX - mx, dy = e.clientY - my;
+      mx = e.clientX; my = e.clientY;
+      pos[t.id].x += dx; pos[t.id].y += dy;
+      el.style.left = pos[t.id].x + 'px';
+      el.style.top = pos[t.id].y + 'px';
+      drawAllEdges();
+    });
+    document.addEventListener('mouseup', () => { dragging = false; });
+  });
+});
+
+function drawAllEdges() {
+  const svg = document.getElementById('edgeSvg');
+  // Remove old paths (keep defs)
+  svg.querySelectorAll('path.edge').forEach(p => p.remove());
+
+  function drawEdge(from, to, isDashed) {
+    const p1 = pos[from], p2 = pos[to];
+    if (!p1 || !p2) return;
+
+    const x1 = p1.x + NODE_W / 2;
+    const y1 = p1.y + (p1.h || 80);
+    const x2 = p2.x + NODE_W / 2;
+    const y2 = p2.y;
+
+    const gap = Math.abs(y2 - y1);
+    const cpOffset = Math.max(30, gap * 0.4);
+
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('class', 'edge');
+    path.setAttribute('d', 'M' + x1 + ' ' + y1 + ' C' + x1 + ' ' + (y1 + cpOffset) + ' ' + x2 + ' ' + (y2 - cpOffset) + ' ' + x2 + ' ' + y2);
+    path.setAttribute('stroke', isDashed ? '#94a3b8' : '#64748b');
+    path.setAttribute('stroke-width', '2');
+    path.setAttribute('fill', 'none');
+    if (isDashed) path.setAttribute('stroke-dasharray', '6,4');
+    path.setAttribute('marker-end', isDashed ? 'url(#arrow-child)' : 'url(#arrow)');
+    svg.appendChild(path);
+  }
+
+  DEP_EDGES.forEach(e => drawEdge(e.from, e.to, false));
+  CHILD_EDGES.forEach(e => drawEdge(e.from, e.to, true));
 }
 </script>
 </body>
@@ -270,7 +382,6 @@ export function exportGanttAsHtml(
   .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .dot-critical { background: #ef4444; } .dot-high { background: #f59e0b; }
   .dot-medium { background: #3b82f6; } .dot-low { background: #6b7280; }
-  /* Gantt bars */
   .gantt { margin-top: 1.5rem; overflow-x: auto; }
   .gantt table { border-collapse: collapse; min-width: 100%; }
   .gantt th, .gantt td { padding: 6px 4px; font-size: 0.8rem; border-bottom: 1px solid #475569; white-space: nowrap; }
@@ -301,7 +412,6 @@ sprints.forEach(s => {
   container.innerHTML += '<div class="sprint"><h3>Sprint '+s.sprint_number+'<span>'+s.total_hours.toFixed(1)+'h / '+s.capacity.toFixed(1)+'h ('+pct+'%)</span></h3><div class="bar-bg"><div class="bar-fill" style="width:'+Math.min(100,pct)+'%"></div></div><ul>'+tasks+'</ul></div>';
 });
 
-// Simple Gantt table
 const allTasks = sprints.flatMap(s => s.tasks);
 if (allTasks.length) {
   const minDay = Math.min(...allTasks.map(t => t.start_day));
@@ -326,13 +436,4 @@ if (allTasks.length) {
 </html>`;
 
   downloadFile(html, filename, "text/html");
-}
-
-function flattenAll(tasks: TaskNode[]): TaskNode[] {
-  const result: TaskNode[] = [];
-  for (const t of tasks) {
-    result.push(t);
-    if (t.children.length > 0) result.push(...flattenAll(t.children));
-  }
-  return result;
 }

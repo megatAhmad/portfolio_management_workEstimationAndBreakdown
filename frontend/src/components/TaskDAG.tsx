@@ -1,12 +1,16 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
+  ReactFlowProvider,
   Background,
   Controls,
   MiniMap,
   useNodesState,
   useEdgesState,
+  useReactFlow,
   addEdge,
+  getNodesBounds,
+  getViewportForBounds,
   type Node,
   type Edge,
   type Connection,
@@ -19,7 +23,8 @@ import "@xyflow/react/dist/style.css";
 import { useProjectStore } from "../store/useProjectStore";
 import type { TaskNode as TaskNodeType } from "../types/task";
 import {
-  exportReactFlowAsPng,
+  toPng,
+  downloadDataUrl,
   exportDAGAsHtml,
 } from "../utils/exportUtils";
 
@@ -232,10 +237,8 @@ function flattenToNodesEdges(
   const sortedLayers = [...layerGroups.keys()].sort((a, b) => a - b);
 
   // 5. Barycentric ordering pass to reduce edge crossings
-  //    Order each layer's nodes by average x of their predecessors
   const xPos = new Map<string, number>();
 
-  // Initial ordering: first layer centered, subsequent layers sorted by predecessor avg
   for (const layerIdx of sortedLayers) {
     const layerNodes = layerGroups.get(layerIdx)!;
     if (layerIdx === sortedLayers[0]) {
@@ -265,7 +268,6 @@ function flattenToNodesEdges(
 
   for (const layerIdx of sortedLayers) {
     const layerNodes = layerGroups.get(layerIdx)!;
-    // Sort by barycentric position
     layerNodes.sort((a, b) => (xPos.get(a) ?? 0) - (xPos.get(b) ?? 0));
     const layerWidth = layerNodes.length * (NODE_W + X_GAP) - X_GAP;
     const startX = X_START + Math.max(0, (totalWidth - layerWidth) / 2);
@@ -433,7 +435,11 @@ function collectIds(tasks: TaskNodeType[]): string[] {
   return ids;
 }
 
-export default function TaskDAG() {
+/**
+ * Inner component that uses useReactFlow() for proper PNG export.
+ * Must be rendered inside <ReactFlowProvider>.
+ */
+function TaskDAGInner() {
   const tasks = useProjectStore((s) => s.tasks);
   const addDependency = useProjectStore((s) => s.addDependency);
   const removeDependency = useProjectStore((s) => s.removeDependency);
@@ -442,6 +448,7 @@ export default function TaskDAG() {
   const validation = useProjectStore((s) => s.validation);
   const addTask = useProjectStore((s) => s.addTask);
   const expandingTaskId = useProjectStore((s) => s.expandingTaskId);
+  const { getNodes } = useReactFlow();
 
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -493,19 +500,37 @@ export default function TaskDAG() {
     setShowAddDialog(false);
   };
 
-  if (tasks.length === 0) {
-    return (
-      <div className="dag-empty">
-        <p>No tasks yet. Enter a feature request and click "Decompose Tasks" to generate a task graph.</p>
-      </div>
-    );
-  }
-
   const handleExportPng = async () => {
     setShowExportMenu(false);
-    if (dagContainerRef.current) {
-      await exportReactFlowAsPng(dagContainerRef.current, "task-dag.png");
-    }
+
+    // Use React Flow's internal nodes (with measured dimensions) for accurate bounds
+    const internalNodes = getNodes();
+    if (internalNodes.length === 0) return;
+
+    const bounds = getNodesBounds(internalNodes);
+    const padding = 50;
+    const imgWidth = Math.max(800, Math.ceil(bounds.width + padding * 2));
+    const imgHeight = Math.max(600, Math.ceil(bounds.height + padding * 2));
+
+    const viewport = getViewportForBounds(bounds, imgWidth, imgHeight, 0.5, 2, padding);
+
+    const viewportEl = dagContainerRef.current?.querySelector<HTMLElement>(
+      ".react-flow__viewport"
+    );
+    if (!viewportEl) return;
+
+    const dataUrl = await toPng(viewportEl, {
+      backgroundColor: "#0f172a",
+      width: imgWidth,
+      height: imgHeight,
+      pixelRatio: 2,
+      style: {
+        width: `${imgWidth}px`,
+        height: `${imgHeight}px`,
+        transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
+      },
+    });
+    downloadDataUrl(dataUrl, "task-dag.png");
   };
 
   const handleExportHtml = () => {
@@ -575,5 +600,23 @@ export default function TaskDAG() {
         <MiniMap />
       </ReactFlow>
     </div>
+  );
+}
+
+export default function TaskDAG() {
+  const tasks = useProjectStore((s) => s.tasks);
+
+  if (tasks.length === 0) {
+    return (
+      <div className="dag-empty">
+        <p>No tasks yet. Enter a feature request and click &quot;Decompose Tasks&quot; to generate a task graph.</p>
+      </div>
+    );
+  }
+
+  return (
+    <ReactFlowProvider>
+      <TaskDAGInner />
+    </ReactFlowProvider>
   );
 }
