@@ -138,25 +138,36 @@ def _extract_json(text: str) -> list[dict]:
     raise ValueError("No JSON array found in AI response")
 
 
-async def _call_anthropic(system: str, user_msg: str) -> str:
-    import anthropic
+async def _call_azure_openai(system: str, user_msg: str) -> str:
+    """Call Azure OpenAI using the openai SDK with azure-specific config."""
+    from openai import AsyncAzureOpenAI
 
-    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
-    response = await client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=4096,
-        system=system,
-        messages=[{"role": "user", "content": user_msg}],
+    client = AsyncAzureOpenAI(
+        api_key=settings.AZURE_OPENAI_API_KEY,
+        azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
+        api_version=settings.AZURE_OPENAI_API_VERSION,
     )
-    return response.content[0].text
+    response = await client.chat.completions.create(
+        model=settings.AZURE_OPENAI_DEPLOYMENT,
+        max_tokens=4096,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_msg},
+        ],
+    )
+    return response.choices[0].message.content or ""
 
 
-async def _call_openai(system: str, user_msg: str) -> str:
+async def _call_openrouter(system: str, user_msg: str) -> str:
+    """Call OpenRouter using the openai-compatible API."""
     from openai import AsyncOpenAI
 
-    client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
+    client = AsyncOpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=settings.OPENROUTER_API_KEY,
+    )
     response = await client.chat.completions.create(
-        model="gpt-4o",
+        model=settings.OPENROUTER_MODEL,
         max_tokens=4096,
         messages=[
             {"role": "system", "content": system},
@@ -167,9 +178,9 @@ async def _call_openai(system: str, user_msg: str) -> str:
 
 
 async def _call_llm(system: str, user_msg: str) -> str:
-    if settings.AI_PROVIDER == "openai":
-        return await _call_openai(system, user_msg)
-    return await _call_anthropic(system, user_msg)
+    if settings.AI_PROVIDER == "azure_openai":
+        return await _call_azure_openai(system, user_msg)
+    return await _call_openrouter(system, user_msg)
 
 
 async def decompose_tasks(req: DecomposeRequest) -> list[TaskNode]:
